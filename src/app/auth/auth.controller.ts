@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { seconds, Throttle } from '@nestjs/throttler';
 import { RegisterDTO } from './dto/register.dto';
@@ -45,7 +45,7 @@ export class AuthController {
     @ApiBody({ type: RefreshTokenDTO })
     @Throttle({ default: { limit: 10, ttl: seconds(60) } })
     @HttpCode(HttpStatus.OK)
-    @Post('logout')
+    @Delete('logout')
     async logout(@Body() body: RefreshTokenDTO) {
         return this.authService.logout(body);
     }
