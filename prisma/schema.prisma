@@ -4,13 +4,37 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
   moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum WalletStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum LedgerEntryType {
+  TOPUP
+  PAYMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum IdempotencyStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 model User {
@@ -21,7 +45,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  refreshTokens RefreshToken[]
+  refreshTokens   RefreshToken[]
+  wallets         Wallet[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("users")
 }
@@ -40,4 +66,61 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt])
   @@map("refresh_tokens")
+}
+
+model Wallet {
+  id        String       @id @default(uuid()) @map("wallet_id") @db.Uuid
+  ownerId   String       @map("owner_id") @db.Uuid
+  currency  String       @db.VarChar(3)
+  balance   Decimal      @default(0) @db.Decimal(20, 2)
+  status    WalletStatus @default(ACTIVE)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  owner   User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ledgers LedgerEntry[]
+
+  @@unique([ownerId, currency])
+  @@index([ownerId])
+  @@map("wallets")
+}
+
+model LedgerEntry {
+  id             String          @id @default(uuid()) @db.Uuid
+  walletId       String          @map("wallet_id") @db.Uuid
+  type           LedgerEntryType
+  direction      LedgerDirection
+  amount         Decimal         @db.Decimal(20, 2)
+  currency       String          @db.VarChar(3)
+  balanceBefore  Decimal         @map("balance_before") @db.Decimal(20, 2)
+  balanceAfter   Decimal         @map("balance_after") @db.Decimal(20, 2)
+  referenceId    String?         @map("reference_id") @db.Uuid
+  idempotencyKey String?         @map("idempotency_key")
+  metadata       Json?
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([referenceId])
+  @@index([idempotencyKey])
+  @@map("ledger_entries")
+}
+
+model IdempotencyKey {
+  id          String            @id @default(uuid()) @db.Uuid
+  userId      String            @map("user_id") @db.Uuid
+  key         String
+  operation   String
+  requestHash String            @map("request_hash")
+  status      IdempotencyStatus @default(PROCESSING)
+  response    Json?
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key, operation])
+  @@index([userId])
+  @@map("idempotency_keys")
 }
