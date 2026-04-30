@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import {
   seconds,
   ThrottlerGuard,
@@ -15,6 +15,7 @@ import { UsersModule } from './app/users/users.module';
 import { WalletsModule } from './app/wallets/wallets.module';
 import { LedgerModule } from './app/ledger/ledger.module';
 import { IdempotencyModule } from './app/idempotency/idempotency.module';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 
 @Module({
   imports: [
@@ -46,6 +47,10 @@ import { IdempotencyModule } from './app/idempotency/idempotency.module';
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ResponseInterceptor,
+    }
   ],
 })
 export class AppModule {}
