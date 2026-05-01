@@ -1,8 +1,8 @@
 import {
-  Injectable,
-  type CallHandler,
-  type ExecutionContext,
-  type NestInterceptor,
+    Injectable,
+    type CallHandler,
+    type ExecutionContext,
+    type NestInterceptor,
 } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
 import { SuccessResponse } from '../types/response.type';
