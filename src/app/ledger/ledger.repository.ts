@@ -34,8 +34,8 @@ export class LedgerRepository {
         SELECT
             COALESCE(SUM(
             CASE
-                WHEN direction::text = 'IN' THEN amount
-                WHEN direction::text = 'OUT' THEN -amount
+                WHEN direction::text = 'CREDIT' THEN amount
+                WHEN direction::text = 'DEBIT' THEN -amount
                 ELSE 0
             END
             ), 0) AS "computedBalance"
