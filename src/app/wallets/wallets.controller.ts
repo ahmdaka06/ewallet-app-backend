@@ -1,5 +1,5 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiHeader, ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CreateWalletDTO } from './dto/create-wallet.dto';
@@ -15,6 +15,8 @@ import { WalletActionResponseDTO, WalletActionTransferResponseDTO } from './dto/
 import { LedgerEntryResponseDTO } from '../ledger/dto/ledger-response.dto';
 import { WalletAuditResponseDTO } from './dto/wallet-audit-response.dto';
 import { seconds, Throttle } from '@nestjs/throttler';
+import { IdempotencyGuard } from 'src/common/guards/idempotency.guard';
+import type { IdempotentRequest } from 'src/common/types/idempotency.type';
 
 @ApiTags('Wallets')
 @ApiBearerAuth('access-token')
@@ -48,6 +50,10 @@ export class WalletsController {
 
     @ApiOperation({ summary: 'Get wallet detail' })
     @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
     @HttpCode(HttpStatus.OK)
     @Get(':id')
     async getWallet(
@@ -59,47 +65,83 @@ export class WalletsController {
 
     @ApiOperation({ summary: 'Top up wallet' })
     @ApiOkResponse({ type: ResponseDTO(WalletActionResponseDTO)})
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
+    @ApiHeader({
+        name: 'Idempotency-Key',
+        description: 'Unique key to prevent duplicate wallet operation requests',
+        required: true,
+        example: 'topup-wallet-001',
+    })
     @ApiBody({ type: TopupWalletDTO })
     @HttpCode(HttpStatus.OK)
     @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post(':id/topup')
+    @UseGuards(IdempotencyGuard)
     async topup(
         @CurrentUser() user: JwtUser,
         @Param('id') walletId: string,
         @Body() body: TopupWalletDTO,
+        @Req() req: IdempotentRequest,
     ) {
-        return this.walletsService.topup(user.sub, walletId, body);
+        return this.walletsService.topup(user.sub, walletId, body, req.idempotency!);
     }
 
     @ApiOperation({ summary: 'Pay from wallet' })
     @ApiOkResponse({ type: ResponseDTO(WalletActionResponseDTO) })
+    @ApiHeader({
+        name: 'Idempotency-Key',
+        description: 'Unique key to prevent duplicate wallet operation requests',
+        required: true,
+        example: 'topup-wallet-001',
+    })
     @ApiBody({ type: PayWalletDTO })
     @HttpCode(HttpStatus.OK)
     @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post(':id/pay')
+    @UseGuards(IdempotencyGuard)
     async pay(
         @CurrentUser() user: JwtUser,
         @Param('id') walletId: string,
         @Body() body: PayWalletDTO,
+        @Req() req: IdempotentRequest,
     ) {
-        return this.walletsService.pay(user.sub, walletId, body);
+        return this.walletsService.pay(user.sub, walletId, body, req.idempotency!);
     }
 
     @ApiOperation({ summary: 'Transfer funds to another wallet with same currency' })
     @ApiOkResponse({ type: ResponseDTO(WalletActionTransferResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
+    @ApiHeader({
+        name: 'Idempotency-Key',
+        description: 'Unique key to prevent duplicate wallet operation requests',
+        required: true,
+        example: 'topup-wallet-001',
+    })
     @ApiBody({ type: TransferWalletDTO })
     @HttpCode(HttpStatus.OK)
     @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post('transfer')
+    @UseGuards(IdempotencyGuard)
     async transfer(
         @CurrentUser() user: JwtUser,
-        @Body() body: TransferWalletDTO
+        @Body() body: TransferWalletDTO,
+        @Req() req: IdempotentRequest,
     ) {
-        return this.walletsService.transfer(user.sub, body);
+        return this.walletsService.transfer(user.sub, body, req.idempotency!);
     }
 
     @ApiOperation({ summary: 'Active wallet' })
     @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
     @HttpCode(HttpStatus.OK)
     @Patch(':id/active')
     async active(
@@ -111,6 +153,10 @@ export class WalletsController {
 
     @ApiOperation({ summary: 'Suspend wallet' })
     @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
     @HttpCode(HttpStatus.OK)
     @Patch(':id/suspend')
     async suspend(
@@ -124,6 +170,10 @@ export class WalletsController {
         summary: 'Get wallet ledger history',
     })
     @ApiOkResponse({ type: ArrayResponseDTO(LedgerEntryResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
     @HttpCode(HttpStatus.OK)
     @Get(':id/ledgers')
     getWalletLedgers(
@@ -137,6 +187,10 @@ export class WalletsController {
         summary: 'Audit wallet balance against ledger entries',
     })
     @ApiOkResponse({ type: ResponseDTO(WalletAuditResponseDTO) })
+    @ApiParam({
+        name: 'id',
+        example: '11111111-1111-1111-1111-111111111111',
+    })
     @HttpCode(HttpStatus.OK)
     @Get(':id/audit')
     auditWalletBalance(

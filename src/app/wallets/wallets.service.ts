@@ -11,6 +11,9 @@ import { WalletResponseDTO } from './dto/wallet-response.dto';
 import { LedgerEntryResponseDTO } from '../ledger/dto/ledger-response.dto';
 import { WalletActionResponseDTO, WalletActionTransferResponseDTO } from './dto/wallet-action-response.dto';
 import { WalletAuditResponseDTO } from './dto/wallet-audit-response.dto';
+import { IdempotencyService } from '../idempotency/idempotency.service';
+import { IdempotencyOperation } from 'src/common/constants/idempotency-operation.constant';
+import type { IdempotencyContext } from 'src/common/types/idempotency.type';
 
 const MIN_AMOUNT = new Prisma.Decimal('0.01');
 
@@ -20,7 +23,8 @@ export class WalletsService {
         private readonly prisma: PrismaService,
         private readonly walletsRepository: WalletsRepository,
         private readonly ledgerRepository: LedgerRepository,
-        private readonly ledgerService: LedgerService
+        private readonly ledgerService: LedgerService,
+        private readonly idempotencyService: IdempotencyService
     ) { }
 
     async createWallet(userId: string, body: CreateWalletDTO): Promise<WalletResponseDTO> {
@@ -42,12 +46,26 @@ export class WalletsService {
         return this.serializeWallet(wallet);
     }
 
-    async topup(userId: string, walletId: string, body: TopupWalletDTO): Promise<WalletActionResponseDTO> {
+    async topup(
+        userId: string,
+        walletId: string,
+        body: TopupWalletDTO,
+        idempotency: IdempotencyContext,
+    ): Promise<WalletActionResponseDTO> {
         const amount = this.parseMoney(body.amount);
-        const referenceId = crypto.randomUUID();
 
-        const wallet = await this.prisma.$transaction(async (tx) => {
-            const locketWallet = await this.walletsRepository.findByIdForUpdate(tx, walletId);
+        return this.idempotencyService.execute({
+            userId,
+            key: idempotency.key,
+            operation: IdempotencyOperation.WALLET_TOPUP,
+            requestHash: idempotency.requestHash,
+        }, async (tx) => {
+            const referenceId = crypto.randomUUID();
+
+            const locketWallet = await this.walletsRepository.findByIdForUpdate(
+                tx,
+                walletId,
+            );
 
             if (!locketWallet) {
                 throw new NotFoundException('Wallet not found');
@@ -68,28 +86,45 @@ export class WalletsService {
                 balanceBefore,
                 balanceAfter,
                 referenceId,
-            })
+            });
 
-            return this.walletsRepository.updateBalance(tx, locketWallet.id, balanceAfter);
-        }, {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            const wallet = await this.walletsRepository.updateBalance(
+                tx,
+                locketWallet.id,
+                balanceAfter,
+            );
+
+            return {
+                wallet: this.serializeWallet(wallet),
+                referenceId,
+            };
         });
-
-        return {
-            wallet: this.serializeWallet(wallet),
-            referenceId,
-        }
     }
 
-    async pay(userId: string, walletId: string, body: TopupWalletDTO): Promise<WalletActionResponseDTO> {
+    async pay(
+        userId: string,
+        walletId: string,
+        body: TopupWalletDTO,
+        idempotency: IdempotencyContext,
+    ): Promise<WalletActionResponseDTO> {
         const amount = this.parseMoney(body.amount);
-        const referenceId = crypto.randomUUID();
 
-        const wallet = await this.prisma.$transaction(async (tx) => {
-            const locketWallet = await this.walletsRepository.findByIdForUpdate(tx, walletId);
+        return this.idempotencyService.execute({
+            userId,
+            key: idempotency.key,
+            operation: IdempotencyOperation.WALLET_PAYMENT,
+            requestHash: idempotency.requestHash,
+        }, async (tx) => {
+
+             const referenceId = crypto.randomUUID();
+
+            const locketWallet = await this.walletsRepository.findByIdForUpdate(
+                    tx,
+                    walletId,
+            );
 
             if (!locketWallet) {
-                throw new NotFoundException('Wallet not found');
+               throw new NotFoundException('Wallet not found');
             }
 
             this.ensureWalletOwner(locketWallet, userId);
@@ -107,25 +142,31 @@ export class WalletsService {
                 walletId: locketWallet.id,
                 type: LedgerEntryType.PAYMENT,
                 direction: LedgerDirection.DEBIT,
-                amount: amount,
+                amount,
                 currency: locketWallet.currency,
                 balanceBefore,
                 balanceAfter,
-                referenceId
+                referenceId,
             });
 
-            return this.walletsRepository.updateBalance(tx, locketWallet.id, balanceAfter);
-        }, {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable
-        })
+            const wallet = await this.walletsRepository.updateBalance(
+                tx,
+                locketWallet.id,
+                balanceAfter,
+            );
 
-        return {
-            wallet: this.serializeWallet(wallet),
-            referenceId,
-        }
+            return {
+                wallet: this.serializeWallet(wallet),
+                referenceId,
+            };
+        });
     }
 
-    async transfer(userId: string, body: TransferWalletDTO): Promise<WalletActionTransferResponseDTO> {
+    async transfer(
+        userId: string,
+        body: TransferWalletDTO,
+        idempotency: IdempotencyContext,
+    ): Promise<WalletActionTransferResponseDTO> {
         const { fromWalletId, toWalletId } = body;
 
         if (fromWalletId === toWalletId) {
@@ -133,16 +174,28 @@ export class WalletsService {
         }
 
         const amount = this.parseMoney(body.amount);
-        const referenceId = crypto.randomUUID();
 
-        const result = await this.prisma.$transaction(async (tx) => {
-            const fromWallet = await this.walletsRepository.findByIdForUpdate(tx, fromWalletId);
+        return this.idempotencyService.execute({
+            userId,
+            key: idempotency.key,
+            operation: IdempotencyOperation.WALLET_TRANSFER,
+            requestHash: idempotency.requestHash,
+        }, async (tx) => {
+            const referenceId = crypto.randomUUID();
+
+            const fromWallet = await this.walletsRepository.findByIdForUpdate(
+                tx,
+                fromWalletId,
+            );
 
             if (!fromWallet) {
                 throw new NotFoundException('Wallet not found');
             }
 
-            const toWallet = await this.walletsRepository.findByIdForUpdate(tx, toWalletId);
+            const toWallet = await this.walletsRepository.findByIdForUpdate(
+                tx,
+                toWalletId,
+            );
 
             if (!toWallet) {
                 throw new NotFoundException('Wallet recipient not found');
@@ -170,7 +223,7 @@ export class WalletsService {
                 walletId: fromWallet.id,
                 type: LedgerEntryType.TRANSFER_OUT,
                 direction: LedgerDirection.DEBIT,
-                amount: amount,
+                amount,
                 currency: fromWallet.currency,
                 balanceBefore: fromWalletBalanceBefore,
                 balanceAfter: fromWalletBalanceAfter,
@@ -188,23 +241,24 @@ export class WalletsService {
                 referenceId,
             });
 
-            const updatedFromWallet = await this.walletsRepository.updateBalance(tx, fromWallet.id, fromWalletBalanceAfter);
+            const updatedFromWallet = await this.walletsRepository.updateBalance(
+                tx,
+                fromWallet.id,
+                fromWalletBalanceAfter,
+            );
 
-            const updatedToWallet = await this.walletsRepository.updateBalance(tx, toWallet.id, toWalletBalanceAfter);
+            const updatedToWallet = await this.walletsRepository.updateBalance(
+                tx,
+                toWallet.id,
+                toWalletBalanceAfter,
+            );
 
             return {
-                fromWallet: updatedFromWallet,
-                toWallet: updatedToWallet
-            }
-        }, {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+                fromWallet: this.serializeWallet(updatedFromWallet),
+                toWallet: this.serializeWallet(updatedToWallet),
+                referenceId,
+            };
         });
-
-        return {
-            fromWallet: this.serializeWallet(result.fromWallet),
-            toWallet: this.serializeWallet(result.toWallet),
-            referenceId
-        }
     }
 
     async suspend(userId: string, walletId: string): Promise<WalletResponseDTO> {
