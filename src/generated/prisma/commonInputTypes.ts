@@ -129,6 +129,13 @@ export type DateTimeNullableWithAggregatesFilter<$PrismaModel = never> = {
   _max?: Prisma.NestedDateTimeNullableFilter<$PrismaModel>
 }
 
+export type EnumWalletCurrencyFilter<$PrismaModel = never> = {
+  equals?: $Enums.WalletCurrency | Prisma.EnumWalletCurrencyFieldRefInput<$PrismaModel>
+  in?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  notIn?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel> | $Enums.WalletCurrency
+}
+
 export type DecimalFilter<$PrismaModel = never> = {
   equals?: runtime.Decimal | runtime.DecimalJsLike | number | string | Prisma.DecimalFieldRefInput<$PrismaModel>
   in?: runtime.Decimal[] | runtime.DecimalJsLike[] | number[] | string[] | Prisma.ListDecimalFieldRefInput<$PrismaModel>
@@ -145,6 +152,16 @@ export type EnumWalletStatusFilter<$PrismaModel = never> = {
   in?: $Enums.WalletStatus[] | Prisma.ListEnumWalletStatusFieldRefInput<$PrismaModel>
   notIn?: $Enums.WalletStatus[] | Prisma.ListEnumWalletStatusFieldRefInput<$PrismaModel>
   not?: Prisma.NestedEnumWalletStatusFilter<$PrismaModel> | $Enums.WalletStatus
+}
+
+export type EnumWalletCurrencyWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.WalletCurrency | Prisma.EnumWalletCurrencyFieldRefInput<$PrismaModel>
+  in?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  notIn?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumWalletCurrencyWithAggregatesFilter<$PrismaModel> | $Enums.WalletCurrency
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel>
 }
 
 export type DecimalWithAggregatesFilter<$PrismaModel = never> = {
@@ -463,6 +480,13 @@ export type NestedIntNullableFilter<$PrismaModel = never> = {
   not?: Prisma.NestedIntNullableFilter<$PrismaModel> | number | null
 }
 
+export type NestedEnumWalletCurrencyFilter<$PrismaModel = never> = {
+  equals?: $Enums.WalletCurrency | Prisma.EnumWalletCurrencyFieldRefInput<$PrismaModel>
+  in?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  notIn?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel> | $Enums.WalletCurrency
+}
+
 export type NestedDecimalFilter<$PrismaModel = never> = {
   equals?: runtime.Decimal | runtime.DecimalJsLike | number | string | Prisma.DecimalFieldRefInput<$PrismaModel>
   in?: runtime.Decimal[] | runtime.DecimalJsLike[] | number[] | string[] | Prisma.ListDecimalFieldRefInput<$PrismaModel>
@@ -479,6 +503,16 @@ export type NestedEnumWalletStatusFilter<$PrismaModel = never> = {
   in?: $Enums.WalletStatus[] | Prisma.ListEnumWalletStatusFieldRefInput<$PrismaModel>
   notIn?: $Enums.WalletStatus[] | Prisma.ListEnumWalletStatusFieldRefInput<$PrismaModel>
   not?: Prisma.NestedEnumWalletStatusFilter<$PrismaModel> | $Enums.WalletStatus
+}
+
+export type NestedEnumWalletCurrencyWithAggregatesFilter<$PrismaModel = never> = {
+  equals?: $Enums.WalletCurrency | Prisma.EnumWalletCurrencyFieldRefInput<$PrismaModel>
+  in?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  notIn?: $Enums.WalletCurrency[] | Prisma.ListEnumWalletCurrencyFieldRefInput<$PrismaModel>
+  not?: Prisma.NestedEnumWalletCurrencyWithAggregatesFilter<$PrismaModel> | $Enums.WalletCurrency
+  _count?: Prisma.NestedIntFilter<$PrismaModel>
+  _min?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel>
+  _max?: Prisma.NestedEnumWalletCurrencyFilter<$PrismaModel>
 }
 
 export type NestedDecimalWithAggregatesFilter<$PrismaModel = never> = {

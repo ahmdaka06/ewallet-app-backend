@@ -964,6 +964,20 @@ export type ListDateTimeFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaM
 
 
 /**
+ * Reference to a field of type 'WalletCurrency'
+ */
+export type EnumWalletCurrencyFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'WalletCurrency'>
+    
+
+
+/**
+ * Reference to a field of type 'WalletCurrency[]'
+ */
+export type ListEnumWalletCurrencyFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'WalletCurrency[]'>
+    
+
+
+/**
  * Reference to a field of type 'Decimal'
  */
 export type DecimalFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Decimal'>

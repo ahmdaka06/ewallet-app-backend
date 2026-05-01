@@ -9,6 +9,16 @@
 * 🟢 You can import this file directly.
 */
 
+export const WalletCurrency = {
+  IDR: 'IDR',
+  USD: 'USD',
+  EUR: 'EUR',
+  MYR: 'MYR'
+} as const
+
+export type WalletCurrency = (typeof WalletCurrency)[keyof typeof WalletCurrency]
+
+
 export const WalletStatus = {
   ACTIVE: 'ACTIVE',
   SUSPENDED: 'SUSPENDED'
