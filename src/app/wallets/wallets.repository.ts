@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, Wallet, WalletStatus } from 'src/generated/prisma/client';
+import { Prisma, Wallet, WalletCurrency, WalletStatus } from 'src/generated/prisma/client';
 import { PrismaService } from 'src/shared/prisma/prisma.service';
 
 @Injectable()
@@ -20,7 +20,7 @@ export class WalletsRepository {
         });
     }
 
-    findByOwnerAndCurrency(ownerId: string, currency: string) {
+    findByOwnerAndCurrency(ownerId: string, currency: WalletCurrency) {
         return this.prisma.wallet.findUnique({
             where: {
                 ownerId_currency: {

@@ -20,7 +20,7 @@ export class WalletsService {
     ) {}
 
     async createWallet(userId: string, body: CreateWalletDTO) {
-        const currency = body.currency.toUpperCase();
+        const currency = body.currency;
 
         const existingWallet = await this.walletsRepository.findByOwnerAndCurrency(userId, currency);
 

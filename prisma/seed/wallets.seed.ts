@@ -1,9 +1,13 @@
-import { Prisma, WalletStatus } from '../../src/generated/prisma/client';
+import { Prisma, WalletCurrency, WalletStatus } from '../../src/generated/prisma/client';
 import type { PrismaClient } from '../../src/generated/prisma/client';
 
 const seedUserEmails = ['john@example.com', 'jane@example.com'];
 
-const currencies = ['USD', 'IDR', 'EUR', 'MYR'] as const;
+const currencies = [
+  WalletCurrency.USD,
+  WalletCurrency.IDR,
+  WalletCurrency.EUR,
+];
 
 export async function seedWallets(prisma: PrismaClient): Promise<void> {
     console.log('🌱 Seeding wallets...');

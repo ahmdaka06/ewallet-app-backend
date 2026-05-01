@@ -1,13 +1,18 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, Length, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsEnum } from 'class-validator';
+import { WalletCurrency } from 'src/generated/prisma/enums';
 
 export class CreateWalletDTO {
     @ApiProperty({
-        example: 'USD',
-        description: 'ISO currency code, example: USD, IDR, EUR',
+        example: WalletCurrency.USD,
+        enum: WalletCurrency,
     })
-    @IsString()
-    @Length(3, 3)
-    @Matches(/^[a-zA-Z]{3}$/)
-    currency: string;
+    @Transform(({ value }) =>
+        typeof value === 'string' ? value.toUpperCase() : value,
+    )
+    @IsEnum(WalletCurrency, {
+        message: 'currency must be one of: USD, IDR, EUR',
+    })
+    currency: WalletCurrency;
 }
