@@ -23,7 +23,9 @@ export class AuthService {
     ) {}
 
     async register(body: RegisterDTO): Promise<AuthTokenResponseDTO> {
-        const existingUser = await this.authRepository.findUserByEmail(body.email);
+        const email = body.email.trim().toLocaleLowerCase();
+
+        const existingUser = await this.authRepository.findUserByEmail(email);
         if (existingUser) {
             throw new ConflictException('Email already in use');
         }
@@ -32,7 +34,7 @@ export class AuthService {
 
         const user = await this.authRepository.createUser({
             name: body.name,
-            email: body.email,
+            email: email,
             password: passwordHash,
         });
 
@@ -52,7 +54,9 @@ export class AuthService {
     }
 
     async login(body: LoginDTO): Promise<AuthTokenResponseDTO> {
-        const user = await this.authRepository.findUserByEmail(body.email);
+        const email = body.email.trim().toLowerCase();
+
+        const user = await this.authRepository.findUserByEmail(email);
 
         if (!user) {
             throw new UnauthorizedException('Invalid credentials');
@@ -85,6 +89,12 @@ export class AuthService {
         const storedToken = await this.authRepository.findRefreshTokenById(payload.jti);
 
         if (!storedToken || storedToken.revokedAt || storedToken.expiresAt < new Date()) {
+            throw new UnauthorizedException('Invalid refresh token');
+        }
+
+        const isRefreshTokenValid = await bcrypt.compare(body.refreshToken, storedToken.tokenHash);
+
+        if (!isRefreshTokenValid) {
             throw new UnauthorizedException('Invalid refresh token');
         }
 

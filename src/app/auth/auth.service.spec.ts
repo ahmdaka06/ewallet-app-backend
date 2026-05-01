@@ -1,14 +1,20 @@
-import { Test, type TestingModule } from '@nestjs/testing';
+jest.mock('./auth.repository', () => ({
+  AuthRepository: class AuthRepository {},
+}));
+
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Test, type TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 
-import { AuthService } from './auth.service';
-import { AuthRepository } from './auth.repository';
 import { AppConfigService } from 'src/shared/config/config.service';
+import { AuthRepository } from './auth.repository';
+import { AuthService } from './auth.service';
 
 describe('AuthService', () => {
   let service: AuthService;
+
+  const randomUUIDMock = jest.fn();
 
   const authRepository = {
     findUserByEmail: jest.fn(),
@@ -42,8 +48,21 @@ describe('AuthService', () => {
     updatedAt: now,
   };
 
+  beforeAll(() => {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: {
+        randomUUID: randomUUIDMock,
+      },
+      configurable: true,
+    });
+  });
+
   beforeEach(async () => {
-    jest.clearAllMocks();
+    Object.values(authRepository).forEach((mock) => mock.mockReset());
+    Object.values(jwtService).forEach((mock) => mock.mockReset());
+
+    randomUUIDMock.mockReset();
+    randomUUIDMock.mockReturnValue('refresh-token-id');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -67,6 +86,9 @@ describe('AuthService', () => {
   });
 
   describe('register', () => {
+    // Deskripsi:
+    // Test ini memastikan user baru bisa register, password di-hash,
+    // access token dan refresh token dibuat, lalu refresh token disimpan ke database.
     it('should register user and return token pair', async () => {
       authRepository.findUserByEmail.mockResolvedValue(null);
       authRepository.createUser.mockResolvedValue(user);
@@ -94,19 +116,60 @@ describe('AuthService', () => {
         }),
       );
 
-      const createdPayload = authRepository.createUser.mock.calls[0][0];
+      const createUserPayload = authRepository.createUser.mock.calls[0][0];
 
-      expect(createdPayload.password).not.toBe('password123');
+      expect(createUserPayload.password).not.toBe('password123');
 
-      const passwordMatch = await bcrypt.compare(
+      const isPasswordValid = await bcrypt.compare(
         'password123',
-        createdPayload.password,
+        createUserPayload.password,
       );
 
-      expect(passwordMatch).toBe(true);
+      expect(isPasswordValid).toBe(true);
 
       expect(jwtService.signAsync).toHaveBeenCalledTimes(2);
+
+      expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+        1,
+        {
+          sub: user.id,
+          email: user.email,
+        },
+        {
+          secret: appConfigService.jwtAccessSecret,
+          expiresIn: appConfigService.jwtAccessExpiresIn,
+        },
+      );
+
+      expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+        2,
+        {
+          sub: user.id,
+          email: user.email,
+          jti: 'refresh-token-id',
+        },
+        {
+          secret: appConfigService.jwtRefreshSecret,
+          expiresIn: appConfigService.jwtRefreshExpiresIn,
+        },
+      );
+
       expect(authRepository.createRefreshToken).toHaveBeenCalledTimes(1);
+
+      const refreshTokenPayload =
+        authRepository.createRefreshToken.mock.calls[0][0];
+
+      expect(refreshTokenPayload).toEqual(
+        expect.objectContaining({
+          id: 'refresh-token-id',
+          userId: user.id,
+          tokenHash: expect.any(String),
+        }),
+      );
+
+      expect(
+        refreshTokenPayload.expiresAt ?? refreshTokenPayload.expiredAt,
+      ).toBeInstanceOf(Date);
 
       expect(result).toEqual({
         user: {
@@ -119,6 +182,9 @@ describe('AuthService', () => {
       });
     });
 
+    // Deskripsi:
+    // Test ini memastikan register gagal jika email sudah digunakan,
+    // sehingga service tidak membuat user baru, token, atau refresh token.
     it('should reject duplicate email', async () => {
       authRepository.findUserByEmail.mockResolvedValue(user);
 
@@ -131,8 +197,13 @@ describe('AuthService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
 
       expect(authRepository.createUser).not.toHaveBeenCalled();
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
+    // Deskripsi:
+    // Test ini memastikan email register dinormalisasi menjadi lowercase
+    // sebelum dicek dan sebelum disimpan ke database.
     it('should normalize email to lowercase', async () => {
       authRepository.findUserByEmail.mockResolvedValue(null);
       authRepository.createUser.mockResolvedValue(user);
@@ -161,6 +232,9 @@ describe('AuthService', () => {
   });
 
   describe('login', () => {
+    // Deskripsi:
+    // Test ini memastikan user bisa login dengan credential valid,
+    // lalu service menghasilkan access token dan refresh token baru.
     it('should login with valid credentials', async () => {
       const passwordHash = await bcrypt.hash('password123', 12);
 
@@ -184,6 +258,9 @@ describe('AuthService', () => {
         'john@example.com',
       );
 
+      expect(jwtService.signAsync).toHaveBeenCalledTimes(2);
+      expect(authRepository.createRefreshToken).toHaveBeenCalledTimes(1);
+
       expect(result).toEqual({
         user: {
           id: user.id,
@@ -195,6 +272,36 @@ describe('AuthService', () => {
       });
     });
 
+    // Deskripsi:
+    // Test ini memastikan email login juga dinormalisasi menjadi lowercase
+    // agar login tidak case-sensitive.
+    it('should normalize login email to lowercase', async () => {
+      const passwordHash = await bcrypt.hash('password123', 12);
+
+      authRepository.findUserByEmail.mockResolvedValue({
+        ...user,
+        password: passwordHash,
+      });
+
+      authRepository.createRefreshToken.mockResolvedValue({});
+
+      jwtService.signAsync
+        .mockResolvedValueOnce('access-token')
+        .mockResolvedValueOnce('refresh-token');
+
+      await service.login({
+        email: 'John@Example.COM',
+        password: 'password123',
+      });
+
+      expect(authRepository.findUserByEmail).toHaveBeenCalledWith(
+        'john@example.com',
+      );
+    });
+
+    // Deskripsi:
+    // Test ini memastikan login gagal jika email tidak ditemukan.
+    // Service harus melempar UnauthorizedException dan tidak membuat token.
     it('should reject invalid email', async () => {
       authRepository.findUserByEmail.mockResolvedValue(null);
 
@@ -204,8 +311,14 @@ describe('AuthService', () => {
           password: 'password123',
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
+    // Deskripsi:
+    // Test ini memastikan login gagal jika password salah.
+    // Service tidak boleh membuat access token ataupun refresh token.
     it('should reject invalid password', async () => {
       const passwordHash = await bcrypt.hash('correct-password', 12);
 
@@ -220,13 +333,19 @@ describe('AuthService', () => {
           password: 'wrong-password',
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
   });
 
   describe('refresh', () => {
+    // Deskripsi:
+    // Test ini memastikan refresh token valid bisa di-rotate.
+    // Token lama harus direvoke, lalu service membuat access token dan refresh token baru.
     it('should rotate refresh token and return new token pair', async () => {
-      const refreshToken = 'old-refresh-token';
-      const refreshTokenHash = await bcrypt.hash(refreshToken, 12);
+      const oldRefreshToken = 'old-refresh-token';
+      const oldRefreshTokenHash = await bcrypt.hash(oldRefreshToken, 12);
 
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
@@ -237,9 +356,11 @@ describe('AuthService', () => {
       authRepository.findRefreshTokenById.mockResolvedValue({
         id: 'old-refresh-token-id',
         userId: user.id,
-        tokenHash: refreshTokenHash,
+        tokenHash: oldRefreshTokenHash,
         expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiredAt: new Date('2099-01-01T00:00:00.000Z'),
         revokedAt: null,
+        revoked: false,
         user,
       });
 
@@ -254,10 +375,10 @@ describe('AuthService', () => {
         .mockResolvedValueOnce('new-refresh-token');
 
       const result = await service.refresh({
-        refreshToken,
+        refreshToken: oldRefreshToken,
       });
 
-      expect(jwtService.verifyAsync).toHaveBeenCalledWith(refreshToken, {
+      expect(jwtService.verifyAsync).toHaveBeenCalledWith(oldRefreshToken, {
         secret: appConfigService.jwtRefreshSecret,
       });
 
@@ -265,9 +386,12 @@ describe('AuthService', () => {
         'old-refresh-token-id',
       );
 
-      expect(authRepository.revokeActiveRefreshToken).toHaveBeenCalledWith(
+      expect(authRepository.revokeActiveRefreshToken).toHaveBeenCalledTimes(1);
+      expect(authRepository.revokeActiveRefreshToken.mock.calls[0][0]).toBe(
         'old-refresh-token-id',
       );
+
+      expect(authRepository.createRefreshToken).toHaveBeenCalledTimes(1);
 
       expect(result).toEqual({
         user: {
@@ -280,6 +404,26 @@ describe('AuthService', () => {
       });
     });
 
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika JWT refresh token tidak valid
+    // atau tidak bisa diverifikasi.
+    it('should reject invalid jwt refresh token', async () => {
+      jwtService.verifyAsync.mockRejectedValue(new Error('invalid token'));
+
+      await expect(
+        service.refresh({
+          refreshToken: 'invalid-refresh-token',
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.findRefreshTokenById).not.toHaveBeenCalled();
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
+    });
+
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika jti valid,
+    // tetapi data refresh token tidak ditemukan di database.
     it('should reject missing stored refresh token', async () => {
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
@@ -294,9 +438,18 @@ describe('AuthService', () => {
           refreshToken: 'refresh-token',
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika refresh token sudah direvoke.
+    // Token yang sudah dicabut tidak boleh digunakan lagi.
     it('should reject revoked refresh token', async () => {
+      const refreshToken = 'refresh-token';
+      const refreshTokenHash = await bcrypt.hash(refreshToken, 12);
+
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
@@ -306,20 +459,31 @@ describe('AuthService', () => {
       authRepository.findRefreshTokenById.mockResolvedValue({
         id: 'revoked-token-id',
         userId: user.id,
-        tokenHash: 'hash',
+        tokenHash: refreshTokenHash,
         expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiredAt: new Date('2099-01-01T00:00:00.000Z'),
         revokedAt: new Date(),
+        revoked: true,
         user,
       });
 
       await expect(
         service.refresh({
-          refreshToken: 'refresh-token',
+          refreshToken,
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika refresh token sudah expired.
+    // Token expired tidak boleh di-rotate.
     it('should reject expired refresh token', async () => {
+      const refreshToken = 'refresh-token';
+      const refreshTokenHash = await bcrypt.hash(refreshToken, 12);
+
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
@@ -329,60 +493,79 @@ describe('AuthService', () => {
       authRepository.findRefreshTokenById.mockResolvedValue({
         id: 'expired-token-id',
         userId: user.id,
-        tokenHash: 'hash',
+        tokenHash: refreshTokenHash,
         expiresAt: new Date('2000-01-01T00:00:00.000Z'),
+        expiredAt: new Date('2000-01-01T00:00:00.000Z'),
         revokedAt: null,
+        revoked: false,
         user,
       });
 
       await expect(
         service.refresh({
-          refreshToken: 'refresh-token',
+          refreshToken,
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika isi refresh token
+    // tidak cocok dengan tokenHash yang tersimpan di database.
     it('should reject refresh token hash mismatch', async () => {
-      const refreshTokenHash = await bcrypt.hash('different-token', 12);
+      const incomingRefreshToken = 'incoming-refresh-token';
+      const differentTokenHash = await bcrypt.hash('different-token', 12);
 
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
-        jti: 'token-id',
+        jti: 'refresh-token-id',
       });
 
       authRepository.findRefreshTokenById.mockResolvedValue({
-        id: 'token-id',
+        id: 'refresh-token-id',
         userId: user.id,
-        tokenHash: refreshTokenHash,
+        tokenHash: differentTokenHash,
         expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiredAt: new Date('2099-01-01T00:00:00.000Z'),
         revokedAt: null,
+        revoked: false,
         user,
       });
 
       await expect(
         service.refresh({
-          refreshToken: 'actual-refresh-token',
+          refreshToken: incomingRefreshToken,
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
 
-    it('should reject already used refresh token', async () => {
+    // Deskripsi:
+    // Test ini memastikan refresh gagal jika proses revoke token lama tidak berhasil.
+    // Biasanya count = 0 artinya token sudah direvoke atau sudah dipakai sebelumnya.
+    it('should reject already used refresh token when revoke count is zero', async () => {
       const refreshToken = 'refresh-token';
       const refreshTokenHash = await bcrypt.hash(refreshToken, 12);
 
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
-        jti: 'token-id',
+        jti: 'refresh-token-id',
       });
 
       authRepository.findRefreshTokenById.mockResolvedValue({
-        id: 'token-id',
+        id: 'refresh-token-id',
         userId: user.id,
         tokenHash: refreshTokenHash,
         expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+        expiredAt: new Date('2099-01-01T00:00:00.000Z'),
         revokedAt: null,
+        revoked: false,
         user,
       });
 
@@ -395,11 +578,16 @@ describe('AuthService', () => {
           refreshToken,
         }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.createRefreshToken).not.toHaveBeenCalled();
     });
   });
 
   describe('logout', () => {
-    it('should revoke refresh token and return true', async () => {
+    // Deskripsi:
+    // Test ini memastikan logout berhasil dengan cara memverifikasi refresh token,
+    // mengambil jti, lalu merevoke refresh token aktif di database.
+    it('should revoke refresh token and return null', async () => {
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
@@ -414,14 +602,22 @@ describe('AuthService', () => {
         refreshToken: 'refresh-token',
       });
 
-      expect(authRepository.revokeActiveRefreshToken).toHaveBeenCalledWith(
+      expect(jwtService.verifyAsync).toHaveBeenCalledWith('refresh-token', {
+        secret: appConfigService.jwtRefreshSecret,
+      });
+
+      expect(authRepository.revokeActiveRefreshToken).toHaveBeenCalledTimes(1);
+      expect(authRepository.revokeActiveRefreshToken.mock.calls[0][0]).toBe(
         'refresh-token-id',
       );
 
-      expect(result).toBe(true);
+      expect(result).toBeNull();
     });
 
-    it('should still return true when token already revoked', async () => {
+    // Deskripsi:
+    // Test ini memastikan logout tetap dianggap berhasil walaupun refresh token
+    // sebelumnya sudah direvoke. Ini membuat logout bersifat idempotent.
+    it('should return null even when refresh token is already revoked', async () => {
       jwtService.verifyAsync.mockResolvedValue({
         sub: user.id,
         email: user.email,
@@ -436,23 +632,67 @@ describe('AuthService', () => {
         refreshToken: 'refresh-token',
       });
 
-      expect(result).toBe(true);
+      expect(authRepository.revokeActiveRefreshToken).toHaveBeenCalledTimes(1);
+      expect(authRepository.revokeActiveRefreshToken.mock.calls[0][0]).toBe(
+        'refresh-token-id',
+      );
+
+      expect(result).toBeNull();
+    });
+
+    // Deskripsi:
+    // Test ini memastikan logout gagal jika refresh token tidak valid,
+    // sehingga tidak ada proses revoke ke database.
+    it('should reject invalid refresh token on logout', async () => {
+      jwtService.verifyAsync.mockRejectedValue(new Error('invalid token'));
+
+      await expect(
+        service.logout({
+          refreshToken: 'invalid-refresh-token',
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(authRepository.revokeActiveRefreshToken).not.toHaveBeenCalled();
     });
   });
 
   describe('me', () => {
-    it('should return current user', async () => {
+    // Deskripsi:
+    // Test ini memastikan endpoint me mengembalikan data user
+    // berdasarkan payload JWT access token yang valid.
+    it('should return current authenticated user', async () => {
+      authRepository.findUserById.mockResolvedValue(user);
+
       const result = await service.me({
         sub: user.id,
         email: user.email,
         name: user.name,
       });
 
+      expect(authRepository.findUserById).toHaveBeenCalledWith(user.id);
+
       expect(result).toEqual({
-        id: user.id,
-        email: user.email,
-        name: user.name,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
       });
+    });
+
+    // Deskripsi:
+    // Test ini memastikan request me ditolak jika user dari payload JWT
+    // tidak ditemukan di database.
+    it('should reject when user is not found', async () => {
+      authRepository.findUserById.mockResolvedValue(null);
+
+      await expect(
+        service.me({
+          sub: user.id,
+          email: user.email,
+          name: user.name,
+        }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 });
