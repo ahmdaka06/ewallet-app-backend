@@ -17,7 +17,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         try {
             await this.$connect();
             await this.$queryRaw`SELECT 1`;
-            console.log('✅ Prisma connected to MySQL');
+            console.log('✅ Prisma connected to PgSQL');
         } catch (error) {
             console.error('❌ Prisma connection error:', error);
             throw error;
@@ -26,6 +26,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
     async onModuleDestroy() {
         await this.$disconnect();
-        console.log('🔌 Prisma disconnected from MySQL');
+        console.log('🔌 Prisma disconnected from PgSQL');
     }
 }
