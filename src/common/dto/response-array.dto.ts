@@ -1,7 +1,7 @@
 import { Type } from '@nestjs/common';
 import { ApiProperty } from '@nestjs/swagger';
 
-export function ResponseDto<T>(classRef: Type<T>) {
+export function ArrayResponseDTO<T>(classRef: Type<T>) {
   class Response {
     @ApiProperty()
     status: boolean;
@@ -9,9 +9,13 @@ export function ResponseDto<T>(classRef: Type<T>) {
     @ApiProperty()
     message: string;
 
-    @ApiProperty({ type: classRef })
-    data: T;
+    @ApiProperty({ type: [classRef] })
+    data: T[];
   }
+
+  Object.defineProperty(Response, 'name', {
+    value: `Array_Response_${classRef.name}`,
+  });
 
   return Response;
 }

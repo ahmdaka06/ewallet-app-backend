@@ -1,19 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Param,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CreateWalletDTO } from './dto/create-wallet.dto';
@@ -23,25 +9,35 @@ import { TransferWalletDTO } from './dto/transfer-wallet.dto';
 import { WalletsService } from './wallets.service';
 import { UserAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import type { JwtUser } from 'src/common/types/jwt.type';
+import { WalletResponseDTO } from './dto/wallet-response.dto';
+import { ArrayResponseDTO, ResponseDTO } from 'src/common/dto';
+import { WalletActionResponseDTO, WalletActionTransferResponseDTO } from './dto/wallet-action-response.dto';
+import { LedgerEntryResponseDTO } from '../ledger/dto/ledger-response.dto';
+import { WalletAuditResponseDTO } from './dto/wallet-audit-response.dto';
+import { seconds, Throttle } from '@nestjs/throttler';
 
 @ApiTags('Wallets')
 @ApiBearerAuth('access-token')
 @UseGuards(UserAuthGuard)
 @Controller('wallets')
 export class WalletsController {
-    constructor(private readonly walletsService: WalletsService) {}
+    constructor(private readonly walletsService: WalletsService) { }
 
     @ApiOperation({ summary: 'Create wallet for authenticated user' })
+    @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
     @ApiBody({ type: CreateWalletDTO })
+    @HttpCode(HttpStatus.OK)
+    @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post()
     async createWallet(
-        @CurrentUser() user: JwtUser, 
+        @CurrentUser() user: JwtUser,
         @Body() body: CreateWalletDTO
     ) {
         return this.walletsService.createWallet(user.sub, body);
     }
 
     @ApiOperation({ summary: 'Get all wallets owned by authenticated user' })
+    @ApiOkResponse({ type: ArrayResponseDTO(WalletResponseDTO) })
     @HttpCode(HttpStatus.OK)
     @Get()
     async getMyWallets(
@@ -51,53 +47,72 @@ export class WalletsController {
     }
 
     @ApiOperation({ summary: 'Get wallet detail' })
+    @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
     @HttpCode(HttpStatus.OK)
     @Get(':id')
     async getWallet(
-        @CurrentUser() user: JwtUser, 
+        @CurrentUser() user: JwtUser,
         @Param('id') walletId: string
     ) {
         return this.walletsService.getWallet(user.sub, walletId);
     }
 
     @ApiOperation({ summary: 'Top up wallet' })
+    @ApiOkResponse({ type: ResponseDTO(WalletActionResponseDTO)})
     @ApiBody({ type: TopupWalletDTO })
     @HttpCode(HttpStatus.OK)
+    @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post(':id/topup')
     async topup(
-        @CurrentUser() user: JwtUser,  
-        @Param('id') walletId: string, 
+        @CurrentUser() user: JwtUser,
+        @Param('id') walletId: string,
         @Body() body: TopupWalletDTO,
     ) {
         return this.walletsService.topup(user.sub, walletId, body);
     }
 
     @ApiOperation({ summary: 'Pay from wallet' })
+    @ApiOkResponse({ type: ResponseDTO(WalletActionResponseDTO) })
     @ApiBody({ type: PayWalletDTO })
     @HttpCode(HttpStatus.OK)
+    @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post(':id/pay')
     async pay(
-        @CurrentUser() user: JwtUser, 
-        @Param('id') walletId: string, 
+        @CurrentUser() user: JwtUser,
+        @Param('id') walletId: string,
         @Body() body: PayWalletDTO,
     ) {
         return this.walletsService.pay(user.sub, walletId, body);
     }
 
     @ApiOperation({ summary: 'Transfer funds to another wallet with same currency' })
+    @ApiOkResponse({ type: ResponseDTO(WalletActionTransferResponseDTO) })
     @ApiBody({ type: TransferWalletDTO })
     @HttpCode(HttpStatus.OK)
+    @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post('transfer')
     async transfer(
-        @CurrentUser() user: JwtUser, 
+        @CurrentUser() user: JwtUser,
         @Body() body: TransferWalletDTO
     ) {
         return this.walletsService.transfer(user.sub, body);
     }
 
-    @ApiOperation({ summary: 'Suspend wallet' })
+    @ApiOperation({ summary: 'Active wallet' })
+    @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
     @HttpCode(HttpStatus.OK)
-    @Post(':id/suspend')
+    @Patch(':id/active')
+    async active(
+        @CurrentUser() user: JwtUser,
+        @Param('id') walletId: string
+    ) {
+        return this.walletsService.active(user.sub, walletId);
+    }
+
+    @ApiOperation({ summary: 'Suspend wallet' })
+    @ApiOkResponse({ type: ResponseDTO(WalletResponseDTO) })
+    @HttpCode(HttpStatus.OK)
+    @Patch(':id/suspend')
     async suspend(
         @CurrentUser() user: JwtUser,
         @Param('id') walletId: string
@@ -108,6 +123,7 @@ export class WalletsController {
     @ApiOperation({
         summary: 'Get wallet ledger history',
     })
+    @ApiOkResponse({ type: ArrayResponseDTO(LedgerEntryResponseDTO) })
     @HttpCode(HttpStatus.OK)
     @Get(':id/ledgers')
     getWalletLedgers(
@@ -120,6 +136,7 @@ export class WalletsController {
     @ApiOperation({
         summary: 'Audit wallet balance against ledger entries',
     })
+    @ApiOkResponse({ type: ResponseDTO(WalletAuditResponseDTO) })
     @HttpCode(HttpStatus.OK)
     @Get(':id/audit')
     auditWalletBalance(

@@ -7,7 +7,10 @@ import { RefreshTokenDTO } from './dto/refresh-token.dto';
 import { UserAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import type { JwtUser } from 'src/common/types/jwt.type';
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ResponseDTO } from 'src/common/dto';
+import { AuthTokenResponseDTO } from './dto/auth-token-response.dto';
+import { AuthMeResponseDTO } from './dto/auth-me-response.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -15,7 +18,9 @@ export class AuthController {
     constructor(private readonly authService: AuthService) {}
 
     @ApiOperation({ summary: 'Register' })
+    @ApiOkResponse({ type: ResponseDTO(AuthTokenResponseDTO) })
     @ApiBody({ type: RegisterDTO })
+    @HttpCode(HttpStatus.OK)
     @Throttle({default: { limit: 5, ttl: seconds(60) } })
     @Post('register')
     async register(@Body() payload: RegisterDTO) {
@@ -33,6 +38,7 @@ export class AuthController {
 
     
     @ApiOperation({ summary: 'Refresh Token' })
+    @ApiOkResponse({ type: ResponseDTO(AuthTokenResponseDTO) })
     @ApiBody({ type: RefreshTokenDTO })
     @Throttle({ default: { limit: 10, ttl: seconds(60) } })
     @HttpCode(HttpStatus.OK)
@@ -42,7 +48,6 @@ export class AuthController {
     }
 
     @ApiOperation({ summary: 'Logout' })
-    @ApiBody({ type: RefreshTokenDTO })
     @Throttle({ default: { limit: 10, ttl: seconds(60) } })
     @HttpCode(HttpStatus.OK)
     @Delete('logout')
@@ -52,6 +57,7 @@ export class AuthController {
 
     
     @ApiOperation({ summary: 'ME : Get current authenticated user' })
+    @ApiOkResponse({ type: ResponseDTO(AuthMeResponseDTO) })
     @ApiBearerAuth('access-token')
     @UseGuards(UserAuthGuard)
     @HttpCode(HttpStatus.OK)

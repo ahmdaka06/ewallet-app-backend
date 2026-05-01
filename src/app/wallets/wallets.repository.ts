@@ -68,6 +68,17 @@ export class WalletsRepository {
         });
     }
 
+    async active(walletId: string) {
+        return this.prisma.wallet.update({
+            where: {
+                id: walletId
+            },
+            data: {
+                status: WalletStatus.ACTIVE
+            }
+        })
+    }
+
     async findByIdForUpdate(
         tx: Prisma.TransactionClient,
         walletId: string,

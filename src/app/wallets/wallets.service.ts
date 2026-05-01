@@ -3,10 +3,14 @@ import { PrismaService } from 'src/shared/prisma/prisma.service';
 import { WalletsRepository } from './wallets.repository';
 import { LedgerRepository } from '../ledger/ledger.repository';
 import { CreateWalletDTO } from './dto/create-wallet.dto';
-import { LedgerDirection, LedgerEntryType, Prisma, Wallet, WalletStatus } from 'src/generated/prisma/client';
+import { LedgerDirection, LedgerEntryType, Prisma, Wallet, WalletCurrency, WalletStatus } from 'src/generated/prisma/client';
 import { TopupWalletDTO } from './dto/topup-wallet.dto';
 import { TransferWalletDTO } from './dto/transfer-wallet.dto';
 import { LedgerService } from '../ledger/ledger.service';
+import { WalletResponseDTO } from './dto/wallet-response.dto';
+import { LedgerEntryResponseDTO } from '../ledger/dto/ledger-response.dto';
+import { WalletActionResponseDTO, WalletActionTransferResponseDTO } from './dto/wallet-action-response.dto';
+import { WalletAuditResponseDTO } from './dto/wallet-audit-response.dto';
 
 const MIN_AMOUNT = new Prisma.Decimal('0.01');
 
@@ -17,9 +21,9 @@ export class WalletsService {
         private readonly walletsRepository: WalletsRepository,
         private readonly ledgerRepository: LedgerRepository,
         private readonly ledgerService: LedgerService
-    ) {}
+    ) { }
 
-    async createWallet(userId: string, body: CreateWalletDTO) {
+    async createWallet(userId: string, body: CreateWalletDTO): Promise<WalletResponseDTO> {
         const currency = body.currency;
 
         const existingWallet = await this.walletsRepository.findByOwnerAndCurrency(userId, currency);
@@ -38,7 +42,7 @@ export class WalletsService {
         return this.serializeWallet(wallet);
     }
 
-    async topup(userId: string, walletId: string, body: TopupWalletDTO) {
+    async topup(userId: string, walletId: string, body: TopupWalletDTO): Promise<WalletActionResponseDTO> {
         const amount = this.parseMoney(body.amount);
         const referenceId = crypto.randomUUID();
 
@@ -77,7 +81,7 @@ export class WalletsService {
         }
     }
 
-    async pay(userId: string, walletId: string, body: TopupWalletDTO) {
+    async pay(userId: string, walletId: string, body: TopupWalletDTO): Promise<WalletActionResponseDTO> {
         const amount = this.parseMoney(body.amount);
         const referenceId = crypto.randomUUID();
 
@@ -115,10 +119,13 @@ export class WalletsService {
             isolationLevel: Prisma.TransactionIsolationLevel.Serializable
         })
 
-        return this.serializeWallet(wallet)
+        return {
+            wallet: this.serializeWallet(wallet),
+            referenceId,
+        }
     }
 
-    async transfer(userId: string, body: TransferWalletDTO) {
+    async transfer(userId: string, body: TransferWalletDTO): Promise<WalletActionTransferResponseDTO> {
         const { fromWalletId, toWalletId } = body;
 
         if (fromWalletId === toWalletId) {
@@ -200,7 +207,7 @@ export class WalletsService {
         }
     }
 
-    async suspend(userId: string, walletId: string) {
+    async suspend(userId: string, walletId: string): Promise<WalletResponseDTO> {
         const wallet = await this.walletsRepository.findById(walletId);
 
         if (!wallet) {
@@ -214,14 +221,28 @@ export class WalletsService {
         return this.serializeWallet(suspendWallet);
     }
 
+    async active(userId: string, walletId: string): Promise<WalletResponseDTO> {
+        const wallet = await this.walletsRepository.findById(walletId);
 
-    async getMyWallets(userId: string) {
+        if (!wallet) {
+            throw new NotFoundException('Wallet not found.');
+        }
+
+        this.ensureWalletOwner(wallet, userId);
+
+        const suspendWallet = await this.walletsRepository.active(wallet.id);
+
+        return this.serializeWallet(suspendWallet);
+    }
+
+
+    async getMyWallets(userId: string): Promise<WalletResponseDTO[]> {
         const wallets = await this.walletsRepository.findManyByOwnerId(userId);
 
         return wallets.map((wallet) => this.serializeWallet(wallet));
     }
 
-    async getWallet(userid: string, walletId: string) {
+    async getWallet(userid: string, walletId: string): Promise<WalletResponseDTO> {
         const wallet = await this.walletsRepository.findById(walletId);
 
         if (!wallet) {
@@ -233,7 +254,7 @@ export class WalletsService {
         return this.serializeWallet(wallet);
     }
 
-    async getWalletLedgers(userId: string, walletId: string) {
+    async getWalletLedgers(userId: string, walletId: string): Promise<LedgerEntryResponseDTO[]> {
         const wallet = await this.walletsRepository.findById(walletId);
 
         if (!wallet) {
@@ -245,7 +266,7 @@ export class WalletsService {
         return this.ledgerService.findManyByWalletId(walletId);
     }
 
-    async auditWalletBalance(userId: string, walletId: string) {
+    async auditWalletBalance(userId: string, walletId: string): Promise<WalletAuditResponseDTO> {
         const wallet = await this.walletsRepository.findById(walletId);
 
         if (!wallet) {
@@ -306,7 +327,7 @@ export class WalletsService {
         }
     }
 
-    private serializeWallet(wallet: Wallet) {
+    private serializeWallet(wallet: Wallet): WalletResponseDTO {
         return {
             id: wallet.id,
             ownerId: wallet.ownerId,

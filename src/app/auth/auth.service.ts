@@ -7,9 +7,10 @@ import { RegisterDTO } from './dto/register.dto';
 import { AccessTokenPayload, JwtUser, RefreshTokenPayload } from 'src/common/types/jwt.type';
 import { LoginDTO } from './dto/login.dto';
 import { TokenPairData, TokenPairPayload } from 'src/common/types/token.type';
-import { AuthMeResponse, AuthTokenResponse } from 'src/common/types/auth.type';
 import { RefreshTokenDTO } from './dto/refresh-token.dto';
-import { UserResponse } from 'src/common/types/user.type';
+import { AuthTokenResponseDTO } from './dto/auth-token-response.dto';
+import { AuthMeResponse } from 'src/common/types/auth.type';
+import { AuthMeResponseDTO } from './dto/auth-me-response.dto';
 
 @Injectable()
 export class AuthService {
@@ -21,7 +22,7 @@ export class AuthService {
         private readonly config: AppConfigService
     ) {}
 
-    async register(body: RegisterDTO): Promise<AuthTokenResponse> {
+    async register(body: RegisterDTO): Promise<AuthTokenResponseDTO> {
         const existingUser = await this.authRepository.findUserByEmail(body.email);
         if (existingUser) {
             throw new ConflictException('Email already in use');
@@ -50,7 +51,7 @@ export class AuthService {
         }
     }
 
-    async login(body: LoginDTO): Promise<AuthTokenResponse> {
+    async login(body: LoginDTO): Promise<AuthTokenResponseDTO> {
         const user = await this.authRepository.findUserByEmail(body.email);
 
         if (!user) {
@@ -78,7 +79,7 @@ export class AuthService {
         };
     }
 
-    async refresh(body: RefreshTokenDTO): Promise<AuthTokenResponse> {
+    async refresh(body: RefreshTokenDTO): Promise<AuthTokenResponseDTO> {
         const payload = await this.verifyRefreshToken(body.refreshToken);
 
         const storedToken = await this.authRepository.findRefreshTokenById(payload.jti);
@@ -116,7 +117,7 @@ export class AuthService {
         return null;
     }
 
-    async me(jwt: JwtUser): Promise<AuthMeResponse> {
+    async me(jwt: JwtUser): Promise<AuthMeResponseDTO> {
         const user = await this.authRepository.findUserById(jwt.sub);
 
         if (!user) {
