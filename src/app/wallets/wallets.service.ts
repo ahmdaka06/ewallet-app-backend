@@ -1,5 +1,4 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'src/shared/prisma/prisma.service';
 import { WalletsRepository } from './wallets.repository';
 import { LedgerRepository } from '../ledger/ledger.repository';
 import { CreateWalletDTO } from './dto/create-wallet.dto';
@@ -20,7 +19,6 @@ const MIN_AMOUNT = new Prisma.Decimal('0.01');
 @Injectable()
 export class WalletsService {
     constructor(
-        private readonly prisma: PrismaService,
         private readonly walletsRepository: WalletsRepository,
         private readonly ledgerRepository: LedgerRepository,
         private readonly ledgerService: LedgerService,

@@ -1,3 +1,7 @@
+jest.mock('./wallets.service', () => ({
+  WalletsService: class WalletsService {},
+}));
+
 jest.mock('src/generated/prisma/client', () => ({
   WalletStatus: {
     ACTIVE: 'ACTIVE',
@@ -18,14 +22,17 @@ jest.mock('src/common/guards/jwt-auth.guard', () => ({
   },
 }));
 
-jest.mock('./wallets.service', () => ({
-  WalletsService: class WalletsService {},
+jest.mock('src/common/guards/idempotency.guard', () => ({
+  IdempotencyGuard: class IdempotencyGuard {
+    canActivate() {
+      return true;
+    }
+  },
 }));
 
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 
-import type { JwtUser } from 'src/common/types/jwt.type';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 
@@ -45,10 +52,19 @@ describe('WalletsController', () => {
     auditWalletBalance: jest.fn(),
   };
 
-  const user: JwtUser = {
+  const user = {
     sub: 'user-id-1',
     email: 'john@example.com',
     name: 'John',
+  };
+
+  const idempotency = {
+    key: 'idem-key-001',
+    requestHash: 'request-hash-001',
+  };
+
+  const req = {
+    idempotency,
   };
 
   const now = new Date('2026-05-01T00:00:00.000Z');
@@ -61,26 +77,6 @@ describe('WalletsController', () => {
     status: 'ACTIVE',
     createdAt: now,
     updatedAt: now,
-  };
-
-  const actionResponse = {
-    wallet: walletResponse,
-    referenceId: 'reference-id-1',
-  };
-
-  const transferResponse = {
-    fromWallet: {
-      ...walletResponse,
-      id: 'wallet-id-1',
-      balance: '80.00',
-    },
-    toWallet: {
-      ...walletResponse,
-      id: 'wallet-id-2',
-      ownerId: 'user-id-2',
-      balance: '70.00',
-    },
-    referenceId: 'reference-id-1',
   };
 
   beforeEach(async () => {
@@ -99,16 +95,16 @@ describe('WalletsController', () => {
     controller = module.get<WalletsController>(WalletsController);
   });
 
-  // Deskripsi:
+  
   // Test ini memastikan WalletsController berhasil dibuat oleh Nest TestingModule.
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
 
   describe('createWallet', () => {
-    // Deskripsi:
-    // Test ini memastikan controller mengambil user.sub dari CurrentUser
-    // lalu meneruskan userId dan body ke WalletsService.createWallet.
+    
+    // Test ini memastikan controller meneruskan userId dan body create wallet
+    // ke WalletsService.createWallet.
     it('should call WalletsService.createWallet and return wallet response', async () => {
       const body = {
         currency: 'USD',
@@ -125,7 +121,7 @@ describe('WalletsController', () => {
   });
 
   describe('getMyWallets', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller mengambil semua wallet milik user login
     // dengan meneruskan user.sub ke WalletsService.getMyWallets.
     it('should call WalletsService.getMyWallets and return wallet list', async () => {
@@ -150,7 +146,7 @@ describe('WalletsController', () => {
   });
 
   describe('getWallet', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller meneruskan userId dan walletId
     // ke WalletsService.getWallet untuk mengambil detail wallet.
     it('should call WalletsService.getWallet and return wallet detail', async () => {
@@ -166,9 +162,9 @@ describe('WalletsController', () => {
       expect(result).toEqual(walletResponse);
     });
 
-    // Deskripsi:
-    // Test ini memastikan error dari service tetap diteruskan oleh controller,
-    // contohnya ketika wallet tidak ditemukan.
+    
+    // Test ini memastikan controller meneruskan error dari service
+    // ketika wallet tidak ditemukan.
     it('should propagate NotFoundException from WalletsService.getWallet', async () => {
       walletsService.getWallet.mockRejectedValue(
         new NotFoundException('Wallet not found'),
@@ -186,38 +182,76 @@ describe('WalletsController', () => {
   });
 
   describe('topup', () => {
-    // Deskripsi:
-    // Test ini memastikan controller meneruskan userId, walletId, dan body top-up
-    // ke WalletsService.topup lalu mengembalikan response dari service.
-    it('should call WalletsService.topup and return action response', async () => {
+    
+    // Test ini memastikan controller meneruskan userId, walletId, body top-up,
+    // dan idempotency context dari req ke WalletsService.topup.
+    it('should call WalletsService.topup with idempotency context and return action response', async () => {
       const body = {
-        amount: '12.35',
+        amount: '100.00',
       };
 
-      walletsService.topup.mockResolvedValue(actionResponse);
+      const response = {
+        wallet: {
+          ...walletResponse,
+          balance: '200.00',
+        },
+        referenceId: 'reference-id-1',
+      };
 
-      const result = await controller.topup(user, 'wallet-id-1', body);
+      walletsService.topup.mockResolvedValue(response);
+
+      const result = await controller.topup(
+        user,
+        'wallet-id-1',
+        body,
+        req as never,
+      );
 
       expect(walletsService.topup).toHaveBeenCalledTimes(1);
       expect(walletsService.topup).toHaveBeenCalledWith(
         user.sub,
         'wallet-id-1',
         body,
+        idempotency,
       );
-      expect(result).toEqual(actionResponse);
+      expect(result).toEqual(response);
+    });
+
+    
+    // Test ini memastikan controller meneruskan error dari service
+    // ketika top-up gagal.
+    it('should propagate BadRequestException from WalletsService.topup', async () => {
+      const body = {
+        amount: '0.001',
+      };
+
+      walletsService.topup.mockRejectedValue(
+        new BadRequestException('Minimum transaction amount is 0.01'),
+      );
+
+      await expect(
+        controller.topup(user, 'wallet-id-1', body, req as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(walletsService.topup).toHaveBeenCalledWith(
+        user.sub,
+        'wallet-id-1',
+        body,
+        idempotency,
+      );
     });
   });
 
   describe('pay', () => {
-    // Deskripsi:
-    // Test ini memastikan controller meneruskan userId, walletId, dan body payment
-    // ke WalletsService.pay lalu mengembalikan response dari service.
-    it('should call WalletsService.pay and return action response', async () => {
+    
+    // Test ini memastikan controller meneruskan userId, walletId, body payment,
+    // dan idempotency context dari req ke WalletsService.pay.
+    it('should call WalletsService.pay with idempotency context and return action response', async () => {
       const body = {
         amount: '25.00',
       };
 
-      const payResponse = {
+      const response = {
         wallet: {
           ...walletResponse,
           balance: '75.00',
@@ -225,43 +259,117 @@ describe('WalletsController', () => {
         referenceId: 'reference-id-1',
       };
 
-      walletsService.pay.mockResolvedValue(payResponse);
+      walletsService.pay.mockResolvedValue(response);
 
-      const result = await controller.pay(user, 'wallet-id-1', body);
+      const result = await controller.pay(
+        user,
+        'wallet-id-1',
+        body,
+        req as never,
+      );
 
       expect(walletsService.pay).toHaveBeenCalledTimes(1);
       expect(walletsService.pay).toHaveBeenCalledWith(
         user.sub,
         'wallet-id-1',
         body,
+        idempotency,
       );
-      expect(result).toEqual(payResponse);
+      expect(result).toEqual(response);
+    });
+
+    
+    // Test ini memastikan controller meneruskan error dari service
+    // ketika payment gagal, misalnya karena saldo tidak cukup.
+    it('should propagate BadRequestException from WalletsService.pay', async () => {
+      const body = {
+        amount: '999.00',
+      };
+
+      walletsService.pay.mockRejectedValue(
+        new BadRequestException('Insufficient Balance'),
+      );
+
+      await expect(
+        controller.pay(user, 'wallet-id-1', body, req as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(walletsService.pay).toHaveBeenCalledWith(
+        user.sub,
+        'wallet-id-1',
+        body,
+        idempotency,
+      );
     });
   });
 
   describe('transfer', () => {
-    // Deskripsi:
-    // Test ini memastikan controller meneruskan userId dan body transfer
-    // ke WalletsService.transfer lalu mengembalikan response transfer.
-    it('should call WalletsService.transfer and return transfer response', async () => {
+    
+    // Test ini memastikan controller meneruskan userId, body transfer,
+    // dan idempotency context dari req ke WalletsService.transfer.
+    it('should call WalletsService.transfer with idempotency context and return transfer response', async () => {
       const body = {
         fromWalletId: 'wallet-id-1',
         toWalletId: 'wallet-id-2',
         amount: '20.00',
       };
 
-      walletsService.transfer.mockResolvedValue(transferResponse);
+      const response = {
+        fromWallet: {
+          ...walletResponse,
+          id: 'wallet-id-1',
+          balance: '80.00',
+        },
+        toWallet: {
+          ...walletResponse,
+          id: 'wallet-id-2',
+          ownerId: 'user-id-2',
+          balance: '70.00',
+        },
+        referenceId: 'reference-id-1',
+      };
 
-      const result = await controller.transfer(user, body);
+      walletsService.transfer.mockResolvedValue(response);
+
+      const result = await controller.transfer(user, body, req as never);
 
       expect(walletsService.transfer).toHaveBeenCalledTimes(1);
-      expect(walletsService.transfer).toHaveBeenCalledWith(user.sub, body);
-      expect(result).toEqual(transferResponse);
+      expect(walletsService.transfer).toHaveBeenCalledWith(
+        user.sub,
+        body,
+        idempotency,
+      );
+      expect(result).toEqual(response);
+    });
+
+    
+    // Test ini memastikan controller meneruskan error dari service
+    // ketika transfer gagal.
+    it('should propagate BadRequestException from WalletsService.transfer', async () => {
+      const body = {
+        fromWalletId: 'wallet-id-1',
+        toWalletId: 'wallet-id-1',
+        amount: '20.00',
+      };
+
+      walletsService.transfer.mockRejectedValue(
+        new BadRequestException('Cannot transfer to the same wallet'),
+      );
+
+      await expect(
+        controller.transfer(user, body, req as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(walletsService.transfer).toHaveBeenCalledWith(
+        user.sub,
+        body,
+        idempotency,
+      );
     });
   });
 
   describe('active', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller meneruskan userId dan walletId
     // ke WalletsService.active untuk mengaktifkan wallet.
     it('should call WalletsService.active and return active wallet', async () => {
@@ -279,7 +387,7 @@ describe('WalletsController', () => {
   });
 
   describe('suspend', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller meneruskan userId dan walletId
     // ke WalletsService.suspend untuk suspend wallet.
     it('should call WalletsService.suspend and return suspended wallet', async () => {
@@ -302,9 +410,9 @@ describe('WalletsController', () => {
   });
 
   describe('getWalletLedgers', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller meneruskan userId dan walletId
-    // ke WalletsService.getWalletLedgers untuk mengambil riwayat ledger wallet.
+    // ke WalletsService.getWalletLedgers untuk mengambil ledger wallet.
     it('should call WalletsService.getWalletLedgers and return ledger list', async () => {
       const ledgers = [
         {
@@ -336,9 +444,9 @@ describe('WalletsController', () => {
   });
 
   describe('auditWalletBalance', () => {
-    // Deskripsi:
+    
     // Test ini memastikan controller meneruskan userId dan walletId
-    // ke WalletsService.auditWalletBalance untuk audit balance wallet terhadap ledger.
+    // ke WalletsService.auditWalletBalance untuk audit balance wallet.
     it('should call WalletsService.auditWalletBalance and return audit response', async () => {
       const auditResponse = {
         walletId: 'wallet-id-1',

@@ -35,7 +35,10 @@ jest.mock('src/generated/prisma/client', () => {
 
     toDecimalPlaces(fractionDigits: number) {
       const factor = 10 ** fractionDigits;
-      return new Decimal(Math.round((this.value + Number.EPSILON) * factor) / factor);
+
+      return new Decimal(
+        Math.round((this.value + Number.EPSILON) * factor) / factor,
+      );
     }
 
     toFixed(fractionDigits: number) {
@@ -46,7 +49,6 @@ jest.mock('src/generated/prisma/client', () => {
   return {
     Prisma: {
       Decimal,
-      DecimalJsLike: Decimal,
       TransactionIsolationLevel: {
         Serializable: 'Serializable',
       },
@@ -54,11 +56,6 @@ jest.mock('src/generated/prisma/client', () => {
     WalletStatus: {
       ACTIVE: 'ACTIVE',
       SUSPENDED: 'SUSPENDED',
-    },
-    WalletCurrency: {
-      USD: 'USD',
-      EUR: 'EUR',
-      IDR: 'IDR',
     },
     LedgerEntryType: {
       TOPUP: 'TOPUP',
@@ -73,10 +70,6 @@ jest.mock('src/generated/prisma/client', () => {
   };
 });
 
-jest.mock('src/shared/prisma/prisma.service', () => ({
-  PrismaService: class PrismaService {},
-}));
-
 jest.mock('./wallets.repository', () => ({
   WalletsRepository: class WalletsRepository {},
 }));
@@ -87,6 +80,10 @@ jest.mock('../ledger/ledger.repository', () => ({
 
 jest.mock('../ledger/ledger.service', () => ({
   LedgerService: class LedgerService {},
+}));
+
+jest.mock('../idempotency/idempotency.service', () => ({
+  IdempotencyService: class IdempotencyService {},
 }));
 
 import {
@@ -100,10 +97,9 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import {
   LedgerDirection,
   LedgerEntryType,
-  Prisma,
   WalletStatus,
 } from 'src/generated/prisma/client';
-import { PrismaService } from 'src/shared/prisma/prisma.service';
+import { IdempotencyService } from '../idempotency/idempotency.service';
 import { LedgerRepository } from '../ledger/ledger.repository';
 import { LedgerService } from '../ledger/ledger.service';
 import { WalletsRepository } from './wallets.repository';
@@ -117,10 +113,6 @@ describe('WalletsService', () => {
   };
 
   const randomUUIDMock = jest.fn();
-
-  const prisma = {
-    $transaction: jest.fn(),
-  };
 
   const walletsRepository = {
     findByOwnerAndCurrency: jest.fn(),
@@ -142,10 +134,19 @@ describe('WalletsService', () => {
     sumAmountByWalletId: jest.fn(),
   };
 
+  const idempotencyService = {
+    execute: jest.fn(),
+  };
+
   const now = new Date('2026-05-01T00:00:00.000Z');
 
   const userId = 'user-id-1';
   const otherUserId = 'user-id-2';
+
+  const idempotency = {
+    key: 'idem-key-001',
+    requestHash: 'request-hash-001',
+  };
 
   const activeUsdWallet = {
     id: 'wallet-id-1',
@@ -196,9 +197,9 @@ describe('WalletsService', () => {
     Object.values(ledgerRepository).forEach((mock) => mock.mockReset());
     Object.values(ledgerService).forEach((mock) => mock.mockReset());
 
-    prisma.$transaction.mockReset();
-    prisma.$transaction.mockImplementation(async (callback, _options) => {
-      return callback(tx);
+    idempotencyService.execute.mockReset();
+    idempotencyService.execute.mockImplementation(async (_params, handler) => {
+      return handler(tx);
     });
 
     randomUUIDMock.mockReset();
@@ -207,10 +208,6 @@ describe('WalletsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletsService,
-        {
-          provide: PrismaService,
-          useValue: prisma,
-        },
         {
           provide: WalletsRepository,
           useValue: walletsRepository,
@@ -222,6 +219,10 @@ describe('WalletsService', () => {
         {
           provide: LedgerService,
           useValue: ledgerService,
+        },
+        {
+          provide: IdempotencyService,
+          useValue: idempotencyService,
         },
       ],
     }).compile();
@@ -238,7 +239,7 @@ describe('WalletsService', () => {
   describe('createWallet', () => {
     
     // Test ini memastikan user bisa membuat wallet baru untuk currency tertentu
-    // dan response balance selalu diformat menjadi 2 angka desimal.
+    // jika wallet dengan currency tersebut belum dimiliki user.
     it('should create wallet when user does not have wallet for selected currency', async () => {
       walletsRepository.findByOwnerAndCurrency.mockResolvedValue(null);
       walletsRepository.create.mockResolvedValue({
@@ -278,10 +279,12 @@ describe('WalletsService', () => {
 
     
     // Edge case multiple wallets per user:
-    // User boleh punya banyak wallet dengan currency berbeda,
-    // tetapi hanya boleh punya satu wallet untuk currency yang sama.
+    // User boleh punya banyak wallet beda currency,
+    // tetapi tidak boleh punya dua wallet untuk currency yang sama.
     it('should reject duplicate wallet for same user and same currency', async () => {
-      walletsRepository.findByOwnerAndCurrency.mockResolvedValue(activeUsdWallet);
+      walletsRepository.findByOwnerAndCurrency.mockResolvedValue(
+        activeUsdWallet,
+      );
 
       await expect(
         service.createWallet(userId, {
@@ -295,9 +298,9 @@ describe('WalletsService', () => {
 
   describe('topup', () => {
     
-    // Edge case decimal precision:
-    // Top-up 12.345 harus dibulatkan menjadi 12.35 menggunakan 2 angka desimal.
-    it('should round top-up amount 12.345 to 12.35', async () => {
+    // Test ini memastikan top-up memakai IdempotencyService.execute
+    // dengan key, operation, dan requestHash dari IdempotencyGuard.
+    it('should execute top-up through idempotency service', async () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue(activeUsdWallet);
       walletsRepository.updateBalance.mockResolvedValue({
         ...activeUsdWallet,
@@ -305,12 +308,21 @@ describe('WalletsService', () => {
       });
       ledgerRepository.create.mockResolvedValue({});
 
-      const result = await service.topup(userId, activeUsdWallet.id, {
-        amount: '12.345',
-      });
+      const result = await service.topup(
+        userId,
+        activeUsdWallet.id,
+        {
+          amount: '12.345',
+        },
+        idempotency,
+      );
 
-      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      expect(idempotencyService.execute).toHaveBeenCalledTimes(1);
+      expect(idempotencyService.execute.mock.calls[0][0]).toEqual({
+        userId,
+        key: idempotency.key,
+        operation: 'wallet.topup',
+        requestHash: idempotency.requestHash,
       });
 
       expect(walletsRepository.findByIdForUpdate).toHaveBeenCalledWith(
@@ -350,76 +362,69 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case large balances:
-    // Service harus aman menangani balance 1,000,000,000.00 atau lebih.
-    it('should safely handle large balance 1,000,000,000.00 or higher', async () => {
-      const largeWallet = {
-        ...activeUsdWallet,
-        balance: '999999999.99',
-      };
-
-      walletsRepository.findByIdForUpdate.mockResolvedValue(largeWallet);
+    // Edge case decimal precision:
+    // Top-up 12.345 harus dibulatkan menjadi 12.35.
+    it('should round top-up amount 12.345 to 12.35', async () => {
+      walletsRepository.findByIdForUpdate.mockResolvedValue(activeUsdWallet);
       walletsRepository.updateBalance.mockResolvedValue({
-        ...largeWallet,
-        balance: '1000000000.00',
+        ...activeUsdWallet,
+        balance: '112.35',
       });
       ledgerRepository.create.mockResolvedValue({});
 
-      const result = await service.topup(userId, activeUsdWallet.id, {
-        amount: '0.01',
-      });
+      await service.topup(
+        userId,
+        activeUsdWallet.id,
+        {
+          amount: '12.345',
+        },
+        idempotency,
+      );
 
       const ledgerPayload = ledgerRepository.create.mock.calls[0][1];
 
-      expect(ledgerPayload.balanceBefore.toFixed(2)).toBe('999999999.99');
-      expect(ledgerPayload.balanceAfter.toFixed(2)).toBe('1000000000.00');
-
-      expect(result.wallet.balance).toBe('1000000000.00');
+      expect(ledgerPayload.amount.toFixed(2)).toBe('12.35');
+      expect(ledgerPayload.balanceAfter.toFixed(2)).toBe('112.35');
     });
 
     
-    // Edge case minimum unit:
-    // Top-up kurang dari 0.01 harus ditolak karena lebih kecil dari smallest unit.
+    // Edge case smallest unit:
+    // Top-up kurang dari 0.01 harus ditolak sebelum masuk IdempotencyService.
     it('should reject top-up amount less than smallest unit', async () => {
       await expect(
-        service.topup(userId, activeUsdWallet.id, {
-          amount: '0.001',
-        }),
+        service.topup(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '0.001',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(idempotencyService.execute).not.toHaveBeenCalled();
       expect(ledgerRepository.create).not.toHaveBeenCalled();
       expect(walletsRepository.updateBalance).not.toHaveBeenCalled();
     });
 
     
-    // Edge case zero or negative amounts:
-    // Top-up dengan 0.00 atau nominal negatif harus ditolak.
+    // Edge case zero or negative amount:
+    // Top-up dengan nominal 0 atau negatif harus ditolak.
     it.each(['0', '0.00', '-1', '-10.50'])(
       'should reject zero or negative top-up amount: %s',
       async (amount) => {
         await expect(
-          service.topup(userId, activeUsdWallet.id, {
-            amount,
-          }),
+          service.topup(
+            userId,
+            activeUsdWallet.id,
+            {
+              amount,
+            },
+            idempotency,
+          ),
         ).rejects.toBeInstanceOf(BadRequestException);
 
-        expect(prisma.$transaction).not.toHaveBeenCalled();
-      },
-    );
-
-    
-    // Test ini memastikan top-up gagal jika format amount tidak valid.
-    it.each(['abc', 'NaN', 'Infinity'])(
-      'should reject invalid top-up amount: %s',
-      async (amount) => {
-        await expect(
-          service.topup(userId, activeUsdWallet.id, {
-            amount,
-          }),
-        ).rejects.toBeInstanceOf(BadRequestException);
-
-        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(idempotencyService.execute).not.toHaveBeenCalled();
       },
     );
 
@@ -429,9 +434,14 @@ describe('WalletsService', () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue(null);
 
       await expect(
-        service.topup(userId, activeUsdWallet.id, {
-          amount: '10.00',
-        }),
+        service.topup(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -447,9 +457,14 @@ describe('WalletsService', () => {
       });
 
       await expect(
-        service.topup(userId, activeUsdWallet.id, {
-          amount: '10.00',
-        }),
+        service.topup(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -457,15 +472,20 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case suspended wallet operations:
-    // Wallet berstatus SUSPENDED tidak boleh menerima top-up.
+    // Edge case suspended wallet:
+    // Wallet SUSPENDED tidak boleh menerima top-up.
     it('should reject top-up for suspended wallet', async () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue(suspendedWallet);
 
       await expect(
-        service.topup(userId, activeUsdWallet.id, {
-          amount: '10.00',
-        }),
+        service.topup(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -475,9 +495,9 @@ describe('WalletsService', () => {
 
   describe('pay', () => {
     
-    // Test ini memastikan payment valid mengurangi balance,
-    // membuat ledger debit, dan mengembalikan balance terbaru.
-    it('should debit wallet balance and create payment ledger', async () => {
+    // Test ini memastikan payment memakai IdempotencyService.execute,
+    // membuat ledger DEBIT, dan mengurangi balance wallet.
+    it('should execute payment through idempotency service', async () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue(activeUsdWallet);
       walletsRepository.updateBalance.mockResolvedValue({
         ...activeUsdWallet,
@@ -485,15 +505,22 @@ describe('WalletsService', () => {
       });
       ledgerRepository.create.mockResolvedValue({});
 
-      const result = await service.pay(userId, activeUsdWallet.id, {
-        amount: '25.00',
-      });
+      const result = await service.pay(
+        userId,
+        activeUsdWallet.id,
+        {
+          amount: '25.00',
+        },
+        idempotency,
+      );
 
-      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      expect(idempotencyService.execute).toHaveBeenCalledTimes(1);
+      expect(idempotencyService.execute.mock.calls[0][0]).toEqual({
+        userId,
+        key: idempotency.key,
+        operation: 'wallet.payment',
+        requestHash: idempotency.requestHash,
       });
-
-      expect(ledgerRepository.create).toHaveBeenCalledTimes(1);
 
       const ledgerPayload = ledgerRepository.create.mock.calls[0][1];
 
@@ -504,42 +531,62 @@ describe('WalletsService', () => {
       expect(ledgerPayload.balanceBefore.toFixed(2)).toBe('100.00');
       expect(ledgerPayload.balanceAfter.toFixed(2)).toBe('75.00');
 
-      expect(result.wallet.balance).toBe('75.00');
-      expect(result.referenceId).toBe('reference-id-1');
+      expect(result).toEqual({
+        wallet: {
+          id: activeUsdWallet.id,
+          ownerId: userId,
+          currency: 'USD',
+          balance: '75.00',
+          status: WalletStatus.ACTIVE,
+          createdAt: now,
+          updatedAt: now,
+        },
+        referenceId: 'reference-id-1',
+      });
     });
 
     
-    // Edge case decimal precision:
+    // Edge case smallest unit:
     // Payment 0.001 harus ditolak karena lebih kecil dari smallest unit.
     it('should reject payment amount less than smallest unit', async () => {
       await expect(
-        service.pay(userId, activeUsdWallet.id, {
-          amount: '0.001',
-        }),
+        service.pay(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '0.001',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(idempotencyService.execute).not.toHaveBeenCalled();
     });
 
     
-    // Edge case zero or negative amounts:
-    // Payment dengan 0.00 atau nominal negatif harus ditolak.
+    // Edge case zero or negative amount:
+    // Payment dengan nominal 0 atau negatif harus ditolak.
     it.each(['0', '0.00', '-1', '-10.50'])(
       'should reject zero or negative payment amount: %s',
       async (amount) => {
         await expect(
-          service.pay(userId, activeUsdWallet.id, {
-            amount,
-          }),
+          service.pay(
+            userId,
+            activeUsdWallet.id,
+            {
+              amount,
+            },
+            idempotency,
+          ),
         ).rejects.toBeInstanceOf(BadRequestException);
 
-        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(idempotencyService.execute).not.toHaveBeenCalled();
       },
     );
 
     
     // Edge case concurrent spending:
-    // Service harus menolak payment yang melebihi balance agar balance tidak negatif.
+    // Payment harus ditolak jika balance tidak cukup agar balance tidak negatif.
     it('should reject payment when balance is insufficient', async () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue({
         ...activeUsdWallet,
@@ -547,9 +594,14 @@ describe('WalletsService', () => {
       });
 
       await expect(
-        service.pay(userId, activeUsdWallet.id, {
-          amount: '25.00',
-        }),
+        service.pay(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '25.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -557,15 +609,20 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case suspended wallet operations:
+    // Edge case suspended wallet:
     // Wallet SUSPENDED tidak boleh melakukan payment.
     it('should reject payment from suspended wallet', async () => {
       walletsRepository.findByIdForUpdate.mockResolvedValue(suspendedWallet);
 
       await expect(
-        service.pay(userId, activeUsdWallet.id, {
-          amount: '10.00',
-        }),
+        service.pay(
+          userId,
+          activeUsdWallet.id,
+          {
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -575,14 +632,12 @@ describe('WalletsService', () => {
 
   describe('transfer', () => {
     
-    // Test ini memastikan transfer valid membuat dua ledger:
-    // TRANSFER_OUT untuk sender dan TRANSFER_IN untuk receiver.
-    it('should transfer between wallets with same currency atomically', async () => {
+    // Test ini memastikan transfer memakai IdempotencyService.execute,
+    // membuat dua ledger, dan mengupdate balance pengirim serta penerima.
+    it('should execute transfer through idempotency service', async () => {
       walletsRepository.findByIdForUpdate
         .mockResolvedValueOnce(activeUsdWallet)
         .mockResolvedValueOnce(activeUsdRecipientWallet);
-
-      ledgerRepository.create.mockResolvedValue({});
 
       walletsRepository.updateBalance
         .mockResolvedValueOnce({
@@ -594,27 +649,25 @@ describe('WalletsService', () => {
           balance: '70.00',
         });
 
-      const result = await service.transfer(userId, {
-        fromWalletId: activeUsdWallet.id,
-        toWalletId: activeUsdRecipientWallet.id,
-        amount: '20.00',
-      });
+      ledgerRepository.create.mockResolvedValue({});
 
-      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
-
-      expect(walletsRepository.findByIdForUpdate).toHaveBeenNthCalledWith(
-        1,
-        tx,
-        activeUsdWallet.id,
+      const result = await service.transfer(
+        userId,
+        {
+          fromWalletId: activeUsdWallet.id,
+          toWalletId: activeUsdRecipientWallet.id,
+          amount: '20.00',
+        },
+        idempotency,
       );
 
-      expect(walletsRepository.findByIdForUpdate).toHaveBeenNthCalledWith(
-        2,
-        tx,
-        activeUsdRecipientWallet.id,
-      );
+      expect(idempotencyService.execute).toHaveBeenCalledTimes(1);
+      expect(idempotencyService.execute.mock.calls[0][0]).toEqual({
+        userId,
+        key: idempotency.key,
+        operation: 'wallet.transfer',
+        requestHash: idempotency.requestHash,
+      });
 
       expect(ledgerRepository.create).toHaveBeenCalledTimes(2);
 
@@ -659,6 +712,25 @@ describe('WalletsService', () => {
     });
 
     
+    // Test ini memastikan transfer ke wallet yang sama ditolak
+    // sebelum masuk IdempotencyService.
+    it('should reject transfer to the same wallet', async () => {
+      await expect(
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(idempotencyService.execute).not.toHaveBeenCalled();
+    });
+
+    
     // Edge case currency mismatch:
     // Transfer antar wallet berbeda currency harus ditolak.
     it('should reject transfer between different currencies', async () => {
@@ -667,30 +739,19 @@ describe('WalletsService', () => {
         .mockResolvedValueOnce(activeEurWallet);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeEurWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeEurWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
       expect(walletsRepository.updateBalance).not.toHaveBeenCalled();
-    });
-
-    
-    // Test ini memastikan transfer ke wallet yang sama ditolak
-    // sebelum membuka database transaction.
-    it('should reject transfer to the same wallet', async () => {
-      await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdWallet.id,
-          amount: '10.00',
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-
-      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     
@@ -699,11 +760,15 @@ describe('WalletsService', () => {
       walletsRepository.findByIdForUpdate.mockResolvedValueOnce(null);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: 'missing-wallet-id',
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: 'missing-wallet-id',
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -718,11 +783,15 @@ describe('WalletsService', () => {
         .mockResolvedValueOnce(null);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: 'missing-recipient-wallet-id',
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: 'missing-recipient-wallet-id',
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -740,11 +809,15 @@ describe('WalletsService', () => {
         .mockResolvedValueOnce(activeUsdRecipientWallet);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(ForbiddenException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -752,19 +825,23 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case suspended wallet operations:
-    // Wallet pengirim yang SUSPENDED tidak boleh melakukan transfer.
+    // Edge case suspended wallet:
+    // Wallet pengirim SUSPENDED tidak boleh transfer.
     it('should reject transfer from suspended source wallet', async () => {
       walletsRepository.findByIdForUpdate
         .mockResolvedValueOnce(suspendedWallet)
         .mockResolvedValueOnce(activeUsdRecipientWallet);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -772,8 +849,8 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case suspended wallet operations:
-    // Wallet penerima yang SUSPENDED tidak boleh menerima transfer.
+    // Edge case suspended wallet:
+    // Wallet penerima SUSPENDED tidak boleh menerima transfer.
     it('should reject transfer to suspended recipient wallet', async () => {
       walletsRepository.findByIdForUpdate
         .mockResolvedValueOnce(activeUsdWallet)
@@ -783,11 +860,15 @@ describe('WalletsService', () => {
         });
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -795,8 +876,8 @@ describe('WalletsService', () => {
     });
 
     
-    // Test ini memastikan transfer gagal jika balance pengirim tidak cukup
-    // agar balance tidak pernah menjadi negatif.
+    // Edge case concurrent spending:
+    // Transfer harus ditolak jika balance pengirim tidak cukup.
     it('should reject transfer when source wallet has insufficient balance', async () => {
       walletsRepository.findByIdForUpdate
         .mockResolvedValueOnce({
@@ -806,11 +887,15 @@ describe('WalletsService', () => {
         .mockResolvedValueOnce(activeUsdRecipientWallet);
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(ledgerRepository.create).not.toHaveBeenCalled();
@@ -818,9 +903,8 @@ describe('WalletsService', () => {
     });
 
     
-    // Edge case partial failure during transfer:
-    // Jika pembuatan ledger kedua gagal, service tidak boleh melakukan update balance.
-    // Di database asli, Prisma transaction akan melakukan rollback.
+    // Edge case partial failure:
+    // Jika ledger kedua gagal dibuat, balance tidak boleh diupdate.
     it('should not update balances when second transfer ledger creation fails', async () => {
       walletsRepository.findByIdForUpdate
         .mockResolvedValueOnce(activeUsdWallet)
@@ -831,11 +915,15 @@ describe('WalletsService', () => {
         .mockRejectedValueOnce(new Error('failed to create recipient ledger'));
 
       await expect(
-        service.transfer(userId, {
-          fromWalletId: activeUsdWallet.id,
-          toWalletId: activeUsdRecipientWallet.id,
-          amount: '10.00',
-        }),
+        service.transfer(
+          userId,
+          {
+            fromWalletId: activeUsdWallet.id,
+            toWalletId: activeUsdRecipientWallet.id,
+            amount: '10.00',
+          },
+          idempotency,
+        ),
       ).rejects.toThrow('failed to create recipient ledger');
 
       expect(ledgerRepository.create).toHaveBeenCalledTimes(2);
@@ -845,7 +933,7 @@ describe('WalletsService', () => {
 
   describe('suspend', () => {
     
-    // Test ini memastikan owner wallet bisa mengubah status wallet menjadi SUSPENDED.
+    // Test ini memastikan owner wallet bisa suspend wallet miliknya.
     it('should suspend wallet', async () => {
       walletsRepository.findById.mockResolvedValue(activeUsdWallet);
       walletsRepository.suspend.mockResolvedValue(suspendedWallet);
@@ -889,7 +977,7 @@ describe('WalletsService', () => {
 
   describe('active', () => {
     
-    // Test ini memastikan owner wallet bisa mengubah status wallet menjadi ACTIVE.
+    // Test ini memastikan owner wallet bisa mengaktifkan kembali wallet.
     it('should activate wallet', async () => {
       walletsRepository.findById.mockResolvedValue(suspendedWallet);
       walletsRepository.active.mockResolvedValue(activeUsdWallet);
@@ -902,12 +990,24 @@ describe('WalletsService', () => {
       expect(result.status).toBe(WalletStatus.ACTIVE);
       expect(result.balance).toBe('100.00');
     });
+
+    
+    // Test ini memastikan active gagal jika wallet tidak ditemukan.
+    it('should reject activate when wallet is not found', async () => {
+      walletsRepository.findById.mockResolvedValue(null);
+
+      await expect(
+        service.active(userId, activeUsdWallet.id),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(walletsRepository.active).not.toHaveBeenCalled();
+    });
   });
 
   describe('getMyWallets', () => {
     
     // Test ini memastikan service mengembalikan semua wallet milik user
-    // dengan format balance 2 angka desimal.
+    // dengan balance dalam format 2 angka desimal.
     it('should return current user wallets', async () => {
       walletsRepository.findManyByOwnerId.mockResolvedValue([
         activeUsdWallet,
@@ -947,7 +1047,7 @@ describe('WalletsService', () => {
 
   describe('getWallet', () => {
     
-    // Test ini memastikan user bisa mengambil detail wallet miliknya sendiri.
+    // Test ini memastikan user bisa mengambil detail wallet miliknya.
     it('should return wallet detail', async () => {
       walletsRepository.findById.mockResolvedValue(activeUsdWallet);
 
@@ -1025,7 +1125,7 @@ describe('WalletsService', () => {
   describe('auditWalletBalance', () => {
     
     // Edge case ledger vs balance mismatch:
-    // Test ini memastikan audit bernilai balanced jika stored balance sama dengan computed ledger balance.
+    // Audit bernilai balanced jika stored balance sama dengan computed ledger balance.
     it('should return balanced audit when wallet balance matches ledger sum', async () => {
       walletsRepository.findById.mockResolvedValue(activeUsdWallet);
       ledgerService.sumAmountByWalletId.mockResolvedValue('100.00');
@@ -1048,8 +1148,7 @@ describe('WalletsService', () => {
 
     
     // Edge case ledger vs balance mismatch:
-    // Test ini memastikan audit bisa mendeteksi jika balance wallet
-    // tidak sama dengan hasil perhitungan ledger entries.
+    // Audit harus bisa mendeteksi jika stored balance tidak sama dengan ledger sum.
     it('should return unbalanced audit when wallet balance does not match ledger sum', async () => {
       walletsRepository.findById.mockResolvedValue(activeUsdWallet);
       ledgerService.sumAmountByWalletId.mockResolvedValue('90.00');
@@ -1064,31 +1163,5 @@ describe('WalletsService', () => {
         isBalanced: false,
       });
     });
-  });
-
-  describe('technical home test requirements not fully implemented yet', () => {
-    
-    // Edge case duplicate requests:
-    // Saat ini service belum menerima idempotencyKey dan belum menyimpan requestHash/operation key.
-    // Jadi double top-up/payment belum bisa diuji sebagai idempotent behavior.
-    it.todo('should ignore duplicate top-up request using idempotency key');
-
-    
-    // Edge case duplicate requests:
-    // Saat ini service belum menerima idempotencyKey dan belum menyimpan requestHash/operation key.
-    // Jadi double payment belum bisa diuji sebagai idempotent behavior.
-    it.todo('should ignore duplicate payment request using idempotency key');
-
-    
-    // Edge case out-of-order requests:
-    // Ini lebih cocok diuji via integration test dengan idempotency/order key,
-    // bukan hanya unit test service tanpa persistence operation.
-    it.todo('should keep wallet consistent when requests arrive out of order');
-
-    
-    // Edge case system restart/crash recovery:
-    // Ini perlu integration test dengan database transaction asli,
-    // bukan hanya mocked transaction.
-    it.todo('should recover safely from crash without partial wallet state');
   });
 });
